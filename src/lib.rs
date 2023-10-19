@@ -1,4 +1,5 @@
-use wgpu::{Backends, Color, CommandEncoderDescriptor, Device, Instance, InstanceDescriptor, LoadOp, Operations, Queue, RenderPassColorAttachment, RenderPassDescriptor, Surface, SurfaceConfiguration, SurfaceError, TextureUsages, TextureViewDescriptor};
+use wgpu::{Backends, CommandEncoderDescriptor, Device, Instance, InstanceDescriptor, LoadOp, Operations, Queue, RenderPassColorAttachment, RenderPassDescriptor, Surface, SurfaceConfiguration, SurfaceError, TextureUsages, TextureViewDescriptor, PipelineLayoutDescriptor, RenderPipelineDescriptor, VertexState, FragmentState, BlendState, PrimitiveState, PrimitiveTopology, MultisampleState, util::{DeviceExt, BufferInitDescriptor}, VertexBufferLayout, BufferAddress, VertexAttribute, IndexFormat};
+
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -11,14 +12,53 @@ use winit::dpi::PhysicalSize;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+impl Vertex {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x3
+        ];
+
+    fn descriptor() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [1.0, 0.0, 0.0] }, // A
+    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.0, 1.0, 0.0] }, // B
+    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.0, 0.0, 1.0] }, // C
+    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [1.0, 1.0, 0.0] }, // D
+    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.5, 1.0, 1.0] }, // E
+];
+
+const INDICES: &[u16] = &[
+    0, 1, 4,
+    1, 2, 4,
+    2, 3, 4,
+];
+
 struct State {
     surface: Surface,
     device: Device,
     queue: Queue,
     config: SurfaceConfiguration,
     size: PhysicalSize<u32>,
-    clear_color: wgpu::Color,
     window: Window,
+    render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
 }
 
 impl State {
@@ -72,16 +112,77 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let clear_color = wgpu::Color::BLACK;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        // alternatively a good shortcut would be:
+        //let shader = device.create_shader_module(&wgpu::include_wgsl!("shader.wgsl"));
+
+        let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+
+        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::descriptor()],
+            },
+            fragment: Some(FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState { format: config.format, blend: Some(BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        });
+
+        let num_indices = INDICES.len() as u32;
+
 
         Self {
             window,
             surface,
             device,
             queue,
-            clear_color,
             config,
             size,
+            render_pipeline,
+            vertex_buffer,
+            index_buffer,
+            num_indices,
         }
     }
 
@@ -102,15 +203,6 @@ impl State {
         // return true, if an event is fully processed, the main loop won't process the event any further
         // we don't have any event to process at the moment, so we return false by default.
         match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.clear_color = wgpu::Color {
-                    r: position.x as f64 / self.size.width as f64,
-                    g: position.y as f64 / self.size.height as f64,
-                    b: 0.0,
-                    a: 1.0,
-                };
-                true
-            }
             _ => false
         }
     }
@@ -127,18 +219,27 @@ impl State {
         // we do an extra block here to drop all encoder bowworing on exiting the block. that allows us to call finish on the encoder afterwards -> neat trick!
         // alternatively, I could've used drop(render_pass) to achieve the same
         {
-            let _render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(self.clear_color),
+                        load: LoadOp::Clear(wgpu::Color {
+                            r: 0.1,
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        }),
                         store: true,
                     },
                 })],
                 depth_stencil_attachment: None,
             });
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -195,7 +296,7 @@ pub async fn run() {
                         _ => {}
                     }
                 }
-                Event::RedrawRequested(window_id) => {
+                Event::RedrawRequested(_window_id) => {
                     state.update();
                     match state.render() {
                         Ok(_) => {}
@@ -219,5 +320,5 @@ pub fn sync_run() {
 }
 
 fn main() {
-    run();
+    sync_run();
 }
