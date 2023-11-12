@@ -1,6 +1,4 @@
-mod lib;
-
-use crate::lib::sync_run;
+use gpu_renderer::sync_run;
 
 fn main() {
     sync_run()
