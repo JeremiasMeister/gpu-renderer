@@ -1,3 +1,20 @@
+// VERTEX DATA
+//0 = position
+//1 = tex_coord0
+//2 = normal
+//3 = color
+//4 =
+//5 =
+
+// CAMERA MATRIX
+//6 = instance matrix line 0
+//7 = instance matrix line 1
+//8 = instance matrix line 2
+//9 = instance matrix line 3
+
+//TIME
+//
+
 struct CameraUniform{
     view_projection: mat4x4<f32>,
 };
@@ -14,14 +31,16 @@ struct InstanceInput {
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-    @location(2) tex_coord0: vec2<f32>,
+    @location(1) tex_coord0: vec4<f32>,
+    @location(2) normal: vec3<f32>,
+    @location(3) color: vec4<f32>,
 };
 
 struct VertexOutput{
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec3<f32>,
-    @location(1) tex_coord0: vec2<f32>,
+    @location(0) tex_coord0: vec4<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
 };
 
 @vertex
@@ -43,6 +62,7 @@ fn vs_main(
     return out;
 }
 
+// custom data aka textures
 @group(0) @binding(0)
 var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
